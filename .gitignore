@@ -1,0 +1,11 @@
+out/
+*.obj
+*.lib
+*.exp
+*.pdb
+*.dll
+src/ini_default.h
+__pycache__/
+*.pyc
+*.log
+CockpitCam.cache/
