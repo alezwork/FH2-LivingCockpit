@@ -3,7 +3,7 @@
    GetFileAttributesExW, FindFirstFileExW imports) are pointed there for them. The game's archives: zips with its own
    central directory extra field 0x1123 (where an entry's data is); a changed entry is stored; media\zipmanifest.xml
    lists every archive's directory (start, size, entries) and is changed with them.
-   Other mods may change the same files (DualSense.dll: UI.zip; CockpitCam.dll, SpeedFX.dll: Camera.zip; all of them
+   Other mods may change the same files (DualSense.dll: UI.zip; LivingCockpit.dll: Camera.zip, UI.zip; all of them
    zipmanifest.xml): this one reads the game's files
    through the hook it replaced, so whatever a mod hooked in before it made is the base and stays; a mod hooked in
    after it does the same with this one's. */
@@ -11,7 +11,7 @@
 #include "inflate.h"
 
 #ifndef OV_CACHE
-#define OV_CACHE L"CockpitCam.cache\\"
+#define OV_CACHE L"LivingCockpit.cache\\"
 #endif
 
 typedef HANDLE(WINAPI *CreateFileWFn)(LPCWSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);

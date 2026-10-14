@@ -1,4 +1,4 @@
-/* camera.h -- the living cockpit camera.
+/* camera.h -- the living cockpit: the camera, and the feel of speed in it.
    The game moves its cameras by "camera physics" (media\Camera.zip: CameraPhysics.xml, and CameraPhysicsSansEffects.xml
    when its camera-effects option is off): per camera, layers that take an input (g-forces, slips, crashes, the bumps
    under each wheel, speed, landings, Kinect head tracking...), map it through a curve (and noise, and a spring) and
@@ -6,8 +6,10 @@
    g-force layers are off. At the game's start both files get more layers after its own (which stay as they are):
    looking into turns (with a dead zone), the horizon tilting and the head pushed out by the sideways g-forces, looking
    where the car goes in a slide, a deeper dip under braking and push back under throttle (copies of the game's layers,
-   scaled), a nod at gear changes, harder bumps, a shake with speed; and its field of view
-   (CameraSettings.ini, Driver\FOV).
+   scaled), a nod at gear changes, harder bumps, a shake with speed; the feel of speed (from [Speed] From to Full: a
+   wider view, darker edges -- the camera's own vignette, the photo mode's: scale 0.98 x 1.46 times 1 + x, power 1 + y,
+   alpha + z (0x1034F90) --, a fine shake from the air; the thrust: the view opening under throttle and closing under
+   braking); and its field of view (CameraSettings.ini, Driver\FOV).
    The game's own units, measured: sideways g about 0..0.3 in turns, longitudinal 0..0.06 accelerating, to -0.75
    braking. Positive g sideways is a right turn, positive yaw a look to the right, positive x to the right, +z forward.
    The game reads the layers into vectors of 0x110-byte layers (Enabled at +0x40, Param x y z w at +0xE0) through one
@@ -19,7 +21,7 @@
 #pragma once
 
 #define CAM_LAYER 0x110 /* a layer in the game's memory */
-#define CAM_MAXOURS 24
+#define CAM_MAXOURS 32
 enum { CAM_COCKPIT, CAM_KINDS };
 static const char *const kCamName[CAM_KINDS] = {"DriverCam"};
 
@@ -34,6 +36,13 @@ static struct {
     float drift;    /* degrees of yaw towards where the car goes in a slide */
     float kick;     /* 0..2: the gear change kick */
     float fov;      /* the cockpit's field of view, degrees (the game's 48); 0: the game's */
+    /* the feel of speed */
+    float from, full; /* mph */
+    float speedFov;   /* degrees wider at full speed */
+    float vignette;   /* 0..2: darker edges */
+    float wind;       /* 0..3: the shake from the air */
+    float thrust;     /* 0..3: the view opening under throttle (5 degrees at 1), closing under braking (3) */
+    volatile LONG blur; /* the game's motion blur on (blur.h) */
 } Cam;
 
 static float cam_pct(const WCHAR *sec, const WCHAR *key, int def, float max)
@@ -55,6 +64,16 @@ static void camera_load(void)
     Cam.kick = cam_pct(L"Camera", L"GearKick", 100, 2);
     Cam.fov = fh2_ini_float(L"Camera", L"FieldOfView", 65);
     Cam.fov = Cam.fov <= 0 ? 0 : Cam.fov < 30 ? 30 : Cam.fov > 90 ? 90 : Cam.fov;
+    Cam.blur = fh2_ini_int(L"Camera", L"MotionBlur", 1) != 0;
+    float from = fh2_ini_float(L"Speed", L"From", 90), full = fh2_ini_float(L"Speed", L"Full", 260);
+    from = from < 0 ? 0 : from > 380 ? 380 : from;
+    full = full < from + 20 ? from + 20 : full;
+    Cam.from = from / 1.609344f, Cam.full = full / 1.609344f; /* km/h -> mph */
+    Cam.speedFov = fh2_ini_float(L"Speed", L"FieldOfView", 12);
+    Cam.speedFov = Cam.speedFov < -20 ? -20 : Cam.speedFov > 30 ? 30 : Cam.speedFov;
+    Cam.vignette = cam_pct(L"Speed", L"Vignette", 130, 2);
+    Cam.wind = cam_pct(L"Speed", L"WindShake", 130, 3);
+    Cam.thrust = cam_pct(L"Speed", L"Thrust", 100, 3);
 }
 
 /* ---- the file: a layer's tag <Layer a="v" ... /> ---- */
@@ -219,6 +238,22 @@ static int cam_cockpit(char **ours, float bumps)
     /* in a slide: looking where the car goes (the sideways slip; a slow spring) */
     static const float kSlide[6] = {0.4f, 0, 1.2f, 0.55f, 3.0f, 1};
     k += cam_pair(ours + k, "Slip_Lateral", "CameraSpaceYPROffset", 10, kSlide, Cam.drift, 0, 0, 12, 1.0f);
+    /* the feel of speed, from From, full at Full, eased: a wider view (a soft spring, breathing with the speed), darker
+       edges (the power and the alpha up), a fine shake from the air (a little later) */
+    float a = Cam.from, b = Cam.full, s = a + (b - a) * 0.3f;
+    float sc[6] = {a, 0, a + (b - a) * 0.5f, 0.45f, b, 1}, wc[6] = {s, 0, s + (b - s) * 0.5f, 0.45f, b, 1};
+    ours[k++] = cam_layer("SpeedMPH", 0, "None", "FOV", 0, 400, 0, sc, Cam.speedFov, 0, 0, 6, 1.0f, 0);
+    ours[k++] = cam_layer("SpeedMPH", 0, "None", "Vignette", 0, 400, 0, sc, 0, 0.35f * Cam.vignette, 0.55f * Cam.vignette, 4,
+                          1.0f, 0);
+    ours[k++] = cam_layer("SpeedMPH", 0, "Simplex", "CameraSpaceYPROffset", 0, 400, 0, wc, 0.10f * Cam.wind, 0.16f * Cam.wind,
+                          0.07f * Cam.wind, 0, 0, 26);
+    ours[k++] = cam_layer("SpeedMPH", 0, "Perlin", "CameraSpaceXYZOffset", 0, 400, 0, wc, 0.0015f * Cam.wind, 0.0025f * Cam.wind,
+                          0, 0, 0, 22);
+    /* the thrust: the view opening under throttle (the longitudinal g 0..0.06), closing under braking (to -0.6); a gear
+       change drops the pull for a moment, so the view kicks */
+    static const float kGo[6] = {0.005f, 0, 0.03f, 0.6f, 0.06f, 1}, kStop[6] = {-0.6f, -1, -0.3f, -0.6f, -0.05f, 0};
+    ours[k++] = cam_layer("Gs_Longitudinal", 0, "None", "FOV", 0, 1, 0, kGo, 5 * Cam.thrust, 0, 0, 7, 1.0f, 0);
+    ours[k++] = cam_layer("Gs_Longitudinal", 0, "None", "FOV", -1, 0, 0, kStop, 3 * Cam.thrust, 0, 0, 9, 1.0f, 0);
     /* a gear change: the head nods with the jolt (the longitudinal g changing fast, per 1/60 s), a bouncy spring; down
        (+pitch, as under braking) when the pull drops. Measured: a jolt 0.1..0.66, small ones 0.01..0.04 */
     static const float kKick[6] = {0.05f, 0, 0.12f, 0.6f, 0.3f, 1};
@@ -336,9 +371,11 @@ static char *camera_patch(const char *xml, size_t len, size_t *outLen)
         g_camSrc[i][l] = 0;
     }
     fh2_say("camera: cockpit -- looks %.0f degrees into turns (dead zone %d%%), lean %d%%, pitch +%d%%, bumps %d%%, "
-            "shake %d%%, slide look %.0f, gear kick %d%%",
+            "shake %d%%, slide look %.0f, gear kick %d%%; speed from %.0f to %.0f km/h: view +%.0f, vignette %d%%, wind %d%%, "
+            "thrust %d%%",
             Cam.look, (int)(Cam.dead * 100), (int)(Cam.lean * 100), (int)(Cam.pitch * 100), (int)(Cam.bumps * 100),
-            (int)(Cam.shake * 100), Cam.drift, (int)(Cam.kick * 100));
+            (int)(Cam.shake * 100), Cam.drift, (int)(Cam.kick * 100), Cam.from * 1.609344f, Cam.full * 1.609344f, Cam.speedFov,
+            (int)(Cam.vignette * 100), (int)(Cam.wind * 100), (int)(Cam.thrust * 100));
     return cam_patch_any(xml, len, outLen, 1);
 }
 
@@ -430,8 +467,8 @@ static const struct {
     signed char layer[2], comp;
     float unit;
 } kCamWatch[4] = {
-    {"look into turns", {0, 1}, 0, 57.29578f}, {"slide look", {17, 18}, 0, 57.29578f}, {"gear nod", {19, 19}, 1, 57.29578f},
-    {"g change", {20, 20}, 0, 1000},
+    {"look into turns", {0, 1}, 0, 57.29578f}, {"slide look", {17, 18}, 0, 57.29578f}, {"gear nod", {25, 25}, 1, 57.29578f},
+    {"g change", {26, 26}, 0, 1000},
 };
 
 static DWORD WINAPI cam_watch(void *arg)

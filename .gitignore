@@ -8,4 +8,4 @@ src/ini_default.h
 __pycache__/
 *.pyc
 *.log
-CockpitCam.cache/
+LivingCockpit.cache/
