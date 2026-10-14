@@ -220,9 +220,9 @@ static int cam_cockpit(char **ours, float bumps)
     static const float kSlide[6] = {0.4f, 0, 1.2f, 0.55f, 3.0f, 1};
     k += cam_pair(ours + k, "Slip_Lateral", "CameraSpaceYPROffset", 10, kSlide, Cam.drift, 0, 0, 12, 1.0f);
     /* a gear change: the head nods with the jolt (the longitudinal g changing fast, per 1/60 s), a bouncy spring; down
-       (+pitch, as under braking) when the pull drops */
-    static const float kKick[6] = {0.01f, 0, 0.025f, 0.6f, 0.06f, 1};
-    ours[k++] = cam_impulse("Gs_Longitudinal", 1, "CarSpaceYPRImpulse", 1, kKick, 0, -28 * Cam.kick, 0, 120, 0.45f, 0.01f, 0.3f);
+       (+pitch, as under braking) when the pull drops. Measured: a jolt 0.1..0.66, small ones 0.01..0.04 */
+    static const float kKick[6] = {0.05f, 0, 0.12f, 0.6f, 0.3f, 1};
+    ours[k++] = cam_impulse("Gs_Longitudinal", 1, "CarSpaceYPRImpulse", 1, kKick, 0, -26 * Cam.kick, 0, 120, 0.45f, 0.05f, 0.3f);
     /* the longitudinal g's change, for the log */
     ours[k++] = cam_probe("Gs_Longitudinal", 1);
     return k;
