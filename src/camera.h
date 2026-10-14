@@ -24,6 +24,7 @@ static struct {
     float pitch; /* 0..2: added to the game's dip and push back (1 = twice the game's) */
     float bumps; /* 0..3: of the game's */
     float shake; /* 0..2 */
+    float fov;   /* the cockpit's field of view, degrees (the game's 48); 0: the game's */
 } Cam;
 
 static void camera_load(void)
@@ -34,6 +35,8 @@ static void camera_load(void)
     Cam.pitch = fh2_ini_int(L"Camera", L"Pitch", 160) / 100.0f;
     Cam.bumps = fh2_ini_int(L"Camera", L"Bumps", 200) / 100.0f;
     Cam.shake = fh2_ini_int(L"Camera", L"Shake", 90) / 100.0f;
+    Cam.fov = fh2_ini_float(L"Camera", L"FieldOfView", 60);
+    Cam.fov = Cam.fov <= 0 ? 0 : Cam.fov < 30 ? 30 : Cam.fov > 90 ? 90 : Cam.fov;
     Cam.lean = Cam.lean < 0 ? 0 : Cam.lean > 2 ? 2 : Cam.lean;
     Cam.pitch = Cam.pitch < 0 ? 0 : Cam.pitch > 2 ? 2 : Cam.pitch;
     Cam.bumps = Cam.bumps < 0 ? 0 : Cam.bumps > 3 ? 3 : Cam.bumps;
@@ -178,16 +181,17 @@ static int g_camBase[4], g_camBases; /* the DriverCam sizes ours went after (64;
 static void cam_make(char *ours[CAM_OURS], float bumps)
 {
     int on = Cam.on, k = 0;
-    /* looking into turns: yaw by the sideways g, smooth (a soft spring), one layer per side as the game's own */
-    static const float kLook[6] = {0.05f, 0, 0.5f, 0.45f, 1.2f, 1};
-    ours[k++] = cam_layer(on, "Gs_Lateral", "None", "CameraSpaceYPROffset", -1.5f, 0, 1, kLook, Cam.look, 0, 0, 25, 1.0f, 0);
-    ours[k++] = cam_layer(on, "Gs_Lateral", "None", "CameraSpaceYPROffset", 0, 1.5f, 0, kLook, Cam.look, 0, 0, 25, 1.0f, 0);
+    /* looking into turns: yaw by the sideways g, smooth (a soft spring), one layer per side as the game's own. The
+       game's sideways g runs about 0..0.3 in turns (measured: its own units, not g), so full at 0.3 */
+    static const float kLook[6] = {0.02f, 0, 0.12f, 0.55f, 0.3f, 1};
+    ours[k++] = cam_layer(on, "Gs_Lateral", "None", "CameraSpaceYPROffset", -1.0f, 0, 1, kLook, Cam.look, 0, 0, 25, 1.0f, 0);
+    ours[k++] = cam_layer(on, "Gs_Lateral", "None", "CameraSpaceYPROffset", 0, 1.0f, 0, kLook, Cam.look, 0, 0, 25, 1.0f, 0);
     /* leaning: the horizon tilting with the body (roll), the head pushed to the outside (sway) */
-    static const float kLean[6] = {0.1f, 0, 0.6f, 0.55f, 1.3f, 1};
-    ours[k++] = cam_layer(on, "Gs_Lateral", "None", "CarSpaceYPROffset", -1.5f, 0, 1, kLean, 0, 0, -2.5f * Cam.lean, 80, 0.85f, 0);
-    ours[k++] = cam_layer(on, "Gs_Lateral", "None", "CarSpaceYPROffset", 0, 1.5f, 0, kLean, 0, 0, -2.5f * Cam.lean, 80, 0.85f, 0);
-    ours[k++] = cam_layer(on, "Gs_Lateral", "None", "CarSpaceXYZOffset", -1.5f, 0, 1, kLean, -0.03f * Cam.lean, 0, 0, 60, 0.9f, 0);
-    ours[k++] = cam_layer(on, "Gs_Lateral", "None", "CarSpaceXYZOffset", 0, 1.5f, 0, kLean, -0.03f * Cam.lean, 0, 0, 60, 0.9f, 0);
+    static const float kLean[6] = {0.03f, 0, 0.15f, 0.6f, 0.35f, 1};
+    ours[k++] = cam_layer(on, "Gs_Lateral", "None", "CarSpaceYPROffset", -1.0f, 0, 1, kLean, 0, 0, -2.5f * Cam.lean, 80, 0.85f, 0);
+    ours[k++] = cam_layer(on, "Gs_Lateral", "None", "CarSpaceYPROffset", 0, 1.0f, 0, kLean, 0, 0, -2.5f * Cam.lean, 80, 0.85f, 0);
+    ours[k++] = cam_layer(on, "Gs_Lateral", "None", "CarSpaceXYZOffset", -1.0f, 0, 1, kLean, -0.03f * Cam.lean, 0, 0, 60, 0.9f, 0);
+    ours[k++] = cam_layer(on, "Gs_Lateral", "None", "CarSpaceXYZOffset", 0, 1.0f, 0, kLean, -0.03f * Cam.lean, 0, 0, 60, 0.9f, 0);
     /* braking and throttle: the game's dip and push back once more, scaled */
     for (int i = 0; i < 4; i++)
         ours[k++] = cam_copy(g_camSrc[i], strlen(g_camSrc[i]), Cam.pitch, on);
@@ -259,6 +263,37 @@ static char *camera_patch_sans(const char *xml, size_t len, size_t *outLen)
     if (!g_camSrc[0])
         return NULL;
     return cam_patch_any(xml, len, outLen, 0);
+}
+
+/* CameraSettings.ini: the cockpit's field of view (Driver\FOV, the game's 48) */
+static char *camera_settings(const char *text, size_t len, size_t *outLen)
+{
+    static const char kKey[] = "Driver\\FOV ";
+    const char *a = NULL;
+    if (Cam.fov <= 0)
+        return NULL;
+    for (const char *p = text; (p = strstr(p, kKey)) != NULL; p++)
+        if (p == text || p[-1] == '\n') {
+            a = p + sizeof kKey - 1;
+            break;
+        }
+    if (!a) {
+        fh2_say("camera: no Driver\\FOV in CameraSettings.ini -- the game's field of view");
+        return NULL;
+    }
+    const char *e = a;
+    while (*e && *e != '\r' && *e != '\n')
+        e++;
+    char num[32];
+    int nl = _snprintf(num, 31, "%.1f", Cam.fov);
+    char *out = (char *)HeapAlloc(GetProcessHeap(), 0, len + 40);
+    memcpy(out, text, (size_t)(a - text));
+    memcpy(out + (a - text), num, nl);
+    memcpy(out + (a - text) + nl, e, len - (size_t)(e - text));
+    *outLen = len - (size_t)(e - a) + nl;
+    out[*outLen] = 0;
+    fh2_say("camera: the cockpit's field of view %.0f degrees (the game's %.*s)", Cam.fov, (int)(e - a), a);
+    return out;
 }
 
 /* ---- the game's memory: our layers on and off ---- */

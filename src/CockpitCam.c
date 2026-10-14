@@ -28,11 +28,11 @@ static BOOL CALLBACK build(PINIT_ONCE once, PVOID param, PVOID *ctx)
     }
     CreateDirectoryW(g_cache, NULL);
     /* the camera with effects first: ours are made from its layers */
-    static const char *const kCamFiles[2] = {"CameraPhysics.xml", "CameraPhysicsSansEffects.xml"};
-    static const OvPatchFn kCamPatch[2] = {camera_patch, camera_patch_sans};
+    static const char *const kCamFiles[3] = {"CameraPhysics.xml", "CameraPhysicsSansEffects.xml", "CameraSettings.ini"};
+    static const OvPatchFn kCamPatch[3] = {camera_patch, camera_patch_sans, camera_settings};
     static const char *const kUiFiles[1] = {"Scenes/Anthem/A_HUDOptions.xaml"};
     static const OvPatchFn kUiPatch[1] = {vm_xaml};
-    made[0] = ov_zip(kRel[0], kCamFiles, kCamPatch, 2, dirs[0]);
+    made[0] = ov_zip(kRel[0], kCamFiles, kCamPatch, 3, dirs[0]);
     if (g_vmOk)
         made[1] = ov_zip(kRel[1], kUiFiles, kUiPatch, 1, dirs[1]);
     if ((made[0] || made[1]) && !ov_manifest(kRel, dirs, made, 2)) {
