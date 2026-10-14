@@ -1,13 +1,18 @@
 /* overlay.h -- the game's files changed without touching them. At the game's first file open the changed copies are
-   made in mods\CockpitCam.cache\ and the engine's file calls (its CreateFileW, GetFileAttributesW,
+   made in mods\<the mod>.cache\ (OV_CACHE) and the engine's file calls (its CreateFileW, GetFileAttributesW,
    GetFileAttributesExW, FindFirstFileExW imports) are pointed there for them. The game's archives: zips with its own
    central directory extra field 0x1123 (where an entry's data is); a changed entry is stored; media\zipmanifest.xml
    lists every archive's directory (start, size, entries) and is changed with them.
-   Other mods may change the same files (DualSense.dll: UI.zip, zipmanifest.xml): this one reads the game's files
+   Other mods may change the same files (DualSense.dll: UI.zip; CockpitCam.dll, SpeedFX.dll: Camera.zip; all of them
+   zipmanifest.xml): this one reads the game's files
    through the hook it replaced, so whatever a mod hooked in before it made is the base and stays; a mod hooked in
    after it does the same with this one's. */
 #pragma once
 #include "inflate.h"
+
+#ifndef OV_CACHE
+#define OV_CACHE L"CockpitCam.cache\\"
+#endif
 
 typedef HANDLE(WINAPI *CreateFileWFn)(LPCWSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
 typedef DWORD(WINAPI *GetFileAttributesWFn)(LPCWSTR);
@@ -24,7 +29,7 @@ typedef struct {
 } OvFile;
 static OvFile g_ov[4];
 static int g_ovN;
-static WCHAR g_media[MAX_PATH], g_cache[MAX_PATH]; /* <game>\Mount\media\, mods\CockpitCam.cache\ */
+static WCHAR g_media[MAX_PATH], g_cache[MAX_PATH]; /* <game>\Mount\media\, mods\<the mod>.cache\ */
 static int g_langRu;
 static INIT_ONCE g_ovOnce = INIT_ONCE_STATIC_INIT;
 static PINIT_ONCE_FN g_ovBuild;
@@ -432,7 +437,7 @@ static int ov_install(Fh2Engine *e, PINIT_ONCE_FN build)
     void *p;
     g_ovBuild = build;
     lstrcpyW(g_cache, g_modDir);
-    lstrcatW(g_cache, L"CockpitCam.cache\\");
+    lstrcatW(g_cache, OV_CACHE);
     g_GetFileAttributesExW = (GetFileAttributesExWFn)GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "GetFileAttributesExW");
     if ((p = fh2_hook_import(e, "KERNEL32.dll", "GetFileAttributesExW", (void *)ov_GetFileAttributesExW)) != NULL)
         g_GetFileAttributesExW = (GetFileAttributesExWFn)p;

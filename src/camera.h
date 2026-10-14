@@ -6,7 +6,7 @@
    g-force layers are off. At the game's start both files get more layers after its own (which stay as they are):
    looking into turns (with a dead zone), the horizon tilting and the head pushed out by the sideways g-forces, looking
    where the car goes in a slide, a deeper dip under braking and push back under throttle (copies of the game's layers,
-   scaled), a nod at gear changes, harder bumps, a shake and a wider view with speed; and its field of view
+   scaled), a nod at gear changes, harder bumps, a shake with speed; and its field of view
    (CameraSettings.ini, Driver\FOV).
    The game's own units, measured: sideways g about 0..0.3 in turns, longitudinal 0..0.06 accelerating, to -0.75
    braking. Positive g sideways is a right turn, positive yaw a look to the right, positive x to the right, +z forward.
@@ -32,7 +32,6 @@ static struct {
     float bumps;    /* 0..3: of the game's */
     float shake;    /* 0..2 */
     float drift;    /* degrees of yaw towards where the car goes in a slide */
-    float speedFov; /* degrees wider at speed */
     float kick;     /* 0..2: the gear change kick */
     float fov;      /* the cockpit's field of view, degrees (the game's 48); 0: the game's */
 } Cam;
@@ -53,7 +52,6 @@ static void camera_load(void)
     Cam.bumps = cam_pct(L"Camera", L"Bumps", 200, 3);
     Cam.shake = cam_pct(L"Camera", L"Shake", 90, 2);
     Cam.drift = fh2_ini_float(L"Camera", L"SlideLook", 10);
-    Cam.speedFov = fh2_ini_float(L"Camera", L"SpeedFieldOfView", 6);
     Cam.kick = cam_pct(L"Camera", L"GearKick", 100, 2);
     Cam.fov = fh2_ini_float(L"Camera", L"FieldOfView", 65);
     Cam.fov = Cam.fov <= 0 ? 0 : Cam.fov < 30 ? 30 : Cam.fov > 90 ? 90 : Cam.fov;
@@ -221,9 +219,6 @@ static int cam_cockpit(char **ours, float bumps)
     /* in a slide: looking where the car goes (the sideways slip; a slow spring) */
     static const float kSlide[6] = {0.4f, 0, 1.2f, 0.55f, 3.0f, 1};
     k += cam_pair(ours + k, "Slip_Lateral", "CameraSpaceYPROffset", 10, kSlide, Cam.drift, 0, 0, 12, 1.0f);
-    /* a wider view with speed */
-    static const float kFov[6] = {60, 0, 110, 0.6f, 160, 1};
-    ours[k++] = cam_layer("SpeedMPH", 0, "None", "FOV", 0, 250, 0, kFov, Cam.speedFov, 0, 0, 20, 1.0f, 0);
     /* a gear change: the head nods with the jolt (the longitudinal g changing fast, per 1/60 s), a bouncy spring; down
        (+pitch, as under braking) when the pull drops */
     static const float kKick[6] = {0.01f, 0, 0.025f, 0.6f, 0.06f, 1};
@@ -341,9 +336,9 @@ static char *camera_patch(const char *xml, size_t len, size_t *outLen)
         g_camSrc[i][l] = 0;
     }
     fh2_say("camera: cockpit -- looks %.0f degrees into turns (dead zone %d%%), lean %d%%, pitch +%d%%, bumps %d%%, "
-            "shake %d%%, slide look %.0f, speed view +%.0f, gear kick %d%%",
+            "shake %d%%, slide look %.0f, gear kick %d%%",
             Cam.look, (int)(Cam.dead * 100), (int)(Cam.lean * 100), (int)(Cam.pitch * 100), (int)(Cam.bumps * 100),
-            (int)(Cam.shake * 100), Cam.drift, Cam.speedFov, (int)(Cam.kick * 100));
+            (int)(Cam.shake * 100), Cam.drift, (int)(Cam.kick * 100));
     return cam_patch_any(xml, len, outLen, 1);
 }
 
@@ -405,11 +400,20 @@ static int cam_layers(BYTE *vec, BYTE **begin)
     return b && e > b ? (int)((e - b) / CAM_LAYER) : 0;
 }
 
+/* ours at base in a list of n: the first looks into turns (Gs_Lateral -> CameraSpaceYPROffset), the last is the probe
+   (Gs_Longitudinal, Linear -> CameraSpaceXYZOffset); other mods' layers may come after (SpeedFX.dll) */
+static int cam_ours_at(BYTE *b, int n, int base, int count)
+{
+    BYTE *f = b + base * CAM_LAYER, *l = b + (base + count - 1) * CAM_LAYER;
+    return count > 0 && base + count <= n && *(int *)(f + 0x48) == 1 && *(int *)(f + 0x50) == 4 && *(int *)(l + 0x48) == 2 &&
+           *(int *)(l + 0x50) == 6 && *(int *)(l + 0xAC) == 1;
+}
+
 static void cam_set(CamVec *v, int on)
 {
     static const float kZero[4] = {0, 0, 0, 0};
     BYTE *b;
-    if (cam_layers(v->vec, &b) != v->base + v->count)
+    if (cam_layers(v->vec, &b) < v->base + v->count)
         return;
     for (int i = 0; i < v->count; i++) {
         BYTE *L = b + (v->base + i) * CAM_LAYER;
@@ -426,8 +430,8 @@ static const struct {
     signed char layer[2], comp;
     float unit;
 } kCamWatch[4] = {
-    {"look into turns", {0, 1}, 0, 57.29578f}, {"slide look", {17, 18}, 0, 57.29578f}, {"gear nod", {20, 20}, 1, 57.29578f},
-    {"g change", {21, 21}, 0, 1000},
+    {"look into turns", {0, 1}, 0, 57.29578f}, {"slide look", {17, 18}, 0, 57.29578f}, {"gear nod", {19, 19}, 1, 57.29578f},
+    {"g change", {20, 20}, 0, 1000},
 };
 
 static DWORD WINAPI cam_watch(void *arg)
@@ -444,7 +448,7 @@ static DWORD WINAPI cam_watch(void *arg)
             for (int v = 0; v < g_camVecs; v++) {
                 CamVec *c = &g_camVec[v];
                 BYTE *b;
-                if (cam_layers(c->vec, &b) != c->base + c->count)
+                if (cam_layers(c->vec, &b) < c->base + c->count)
                     continue;
                 for (int w = 0; w < 4; w++)
                     for (int side = 0; side < 2; side++) {
@@ -487,7 +491,7 @@ static void *__fastcall hk_layer_list(BYTE *vec, void *visitor, const char *name
     if (kind >= 0) {
         n = cam_layers(vec, &b);
         for (int i = 0; i < g_camBases[kind]; i++)
-            if (n == g_camBase[kind][i] + g_camOurs[kind])
+            if (cam_ours_at(b, n, g_camBase[kind][i], g_camOurs[kind]))
                 base = g_camBase[kind][i];
     }
     if (base >= 0) {
