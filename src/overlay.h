@@ -200,71 +200,96 @@ static int ov_name_is(const char *a, const char *b)
     }
 }
 
-/* media\<rel> again with one entry changed by patch (its other entries as they are); dir: its new directory */
-static int ov_zip(const char *rel, const char *entry, OvPatchFn patch, DWORD dir[3])
+/* media\<rel> again with entries changed by their patches, in the order given (its other entries as they are);
+   dir: its new directory. Nothing changed: 0. */
+static int ov_zip(const char *rel, const char *const *entries, const OvPatchFn *patches, int np, DWORD dir[3])
 {
     WCHAR path[MAX_PATH], wrel[96], out[MAX_PATH];
     DWORD len = 0;
+    int at[4], changed = 0;
+    char *t[4];
+    size_t tl[4];
     MultiByteToWideChar(CP_UTF8, 0, rel, -1, wrel, 96);
     lstrcpyW(path, g_media);
     lstrcatW(path, wrel);
     BYTE *z = ov_load(path, &len, 1);
     ZEnt *e = NULL;
-    int n = z ? zip_parse(z, len, &e) : -1, at = -1;
-    for (int k = 0; k < n && at < 0; k++)
-        if (ov_name_is(e[k].name, entry))
-            at = k;
-    if (at < 0) {
-        fh2_say("files: %s: no %s in it -- left as it is", rel, entry);
+    int n = z ? zip_parse(z, len, &e) : -1;
+    if (n < 0) {
+        fh2_say("files: %s: not readable -- left as it is", rel);
         return 0;
     }
-    BYTE *raw = zip_read(z, &e[at]);
-    size_t nl = 0;
-    char *t = raw ? patch((const char *)raw, e[at].usize, &nl) : NULL;
-    if (raw)
-        HeapFree(GetProcessHeap(), 0, raw);
-    if (!t)
+    for (int j = 0; j < np && j < 4; j++) {
+        at[j] = -1, t[j] = NULL, tl[j] = 0;
+        for (int k = 0; k < n && at[j] < 0; k++)
+            if (ov_name_is(e[k].name, entries[j]))
+                at[j] = k;
+        if (at[j] < 0) {
+            fh2_say("files: %s: no %s in it", rel, entries[j]);
+            continue;
+        }
+        BYTE *raw = zip_read(z, &e[at[j]]);
+        t[j] = raw ? patches[j]((const char *)raw, e[at[j]].usize, &tl[j]) : NULL;
+        if (raw)
+            HeapFree(GetProcessHeap(), 0, raw);
+        changed += t[j] != NULL;
+    }
+    if (!changed) {
+        HeapFree(GetProcessHeap(), 0, z);
+        HeapFree(GetProcessHeap(), 0, e);
         return 0;
-    /* the new zip: the entries as they were, the changed one stored */
-    size_t size = 22 + nl;
+    }
+    /* the new zip: the entries as they were, the changed ones stored */
+    size_t size = 22;
+    for (int j = 0; j < np; j++)
+        size += tl[j];
     for (int i = 0; i < n; i++)
         size += 30 + 46 + 8 + 2 * strlen(e[i].name) + e[i].csize;
     BYTE *o = (BYTE *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, size), *p = o;
     DWORD *offs = (DWORD *)HeapAlloc(GetProcessHeap(), 0, (n + 1) * 2 * sizeof(DWORD));
-    DWORD crcT = ov_crc((BYTE *)t, nl);
-    for (int i = 0; i < n; i++) {
-        WORD L = (WORD)strlen(e[i].name);
-        int mine = i == at;
-        DWORD cs = mine ? (DWORD)nl : e[i].csize, us = mine ? (DWORD)nl : e[i].usize;
-        offs[2 * i] = (DWORD)(p - o);
-        *(DWORD *)p = 0x04034B50, *(WORD *)(p + 4) = 10, *(WORD *)(p + 8) = mine ? 0 : e[i].method;
-        *(DWORD *)(p + 14) = mine ? crcT : e[i].crc, *(DWORD *)(p + 18) = cs, *(DWORD *)(p + 22) = us;
-        *(WORD *)(p + 26) = L;
-        memcpy(p + 30, e[i].name, L);
-        p += 30 + L;
-        offs[2 * i + 1] = (DWORD)(p - o);
-        memcpy(p, mine ? (const BYTE *)t : z + e[i].dataOff, cs);
-        p += cs;
+    DWORD crcs[4];
+    for (int j = 0; j < np; j++)
+        crcs[j] = t[j] ? ov_crc((BYTE *)t[j], tl[j]) : 0;
+    for (int pass = 0; pass < 2; pass++) {
+        DWORD cd = (DWORD)(p - o);
+        for (int i = 0; i < n; i++) {
+            WORD L = (WORD)strlen(e[i].name);
+            int mine = -1;
+            for (int j = 0; j < np; j++)
+                if (at[j] == i && t[j])
+                    mine = j;
+            DWORD cs = mine >= 0 ? (DWORD)tl[mine] : e[i].csize, us = mine >= 0 ? (DWORD)tl[mine] : e[i].usize;
+            DWORD crc = mine >= 0 ? crcs[mine] : e[i].crc;
+            WORD method = mine >= 0 ? 0 : e[i].method;
+            if (pass == 0) { /* the local headers and the data */
+                offs[2 * i] = (DWORD)(p - o);
+                *(DWORD *)p = 0x04034B50, *(WORD *)(p + 4) = 10, *(WORD *)(p + 8) = method;
+                *(DWORD *)(p + 14) = crc, *(DWORD *)(p + 18) = cs, *(DWORD *)(p + 22) = us;
+                *(WORD *)(p + 26) = L;
+                memcpy(p + 30, e[i].name, L);
+                p += 30 + L;
+                offs[2 * i + 1] = (DWORD)(p - o);
+                memcpy(p, mine >= 0 ? (const BYTE *)t[mine] : z + e[i].dataOff, cs);
+                p += cs;
+            } else { /* the central directory */
+                *(DWORD *)p = 0x02014B50, *(WORD *)(p + 4) = 10, *(WORD *)(p + 6) = 10, *(WORD *)(p + 10) = method;
+                *(DWORD *)(p + 16) = crc, *(DWORD *)(p + 20) = cs, *(DWORD *)(p + 24) = us;
+                *(WORD *)(p + 28) = L, *(WORD *)(p + 30) = 8;
+                *(DWORD *)(p + 42) = offs[2 * i];
+                memcpy(p + 46, e[i].name, L);
+                p += 46 + L;
+                *(WORD *)p = 0x1123, *(WORD *)(p + 2) = 4, *(DWORD *)(p + 4) = offs[2 * i + 1]; /* the game's: the data */
+                p += 8;
+            }
+        }
+        if (pass == 1) {
+            DWORD cdSize = (DWORD)(p - o) - cd;
+            *(DWORD *)p = 0x06054B50, *(WORD *)(p + 8) = (WORD)n, *(WORD *)(p + 10) = (WORD)n;
+            *(DWORD *)(p + 12) = cdSize, *(DWORD *)(p + 16) = cd;
+            p += 22;
+            dir[0] = cd, dir[1] = cdSize + 22, dir[2] = (DWORD)n;
+        }
     }
-    DWORD cd = (DWORD)(p - o);
-    for (int i = 0; i < n; i++) {
-        WORD L = (WORD)strlen(e[i].name);
-        int mine = i == at;
-        *(DWORD *)p = 0x02014B50, *(WORD *)(p + 4) = 10, *(WORD *)(p + 6) = 10, *(WORD *)(p + 10) = mine ? 0 : e[i].method;
-        *(DWORD *)(p + 16) = mine ? crcT : e[i].crc, *(DWORD *)(p + 20) = mine ? (DWORD)nl : e[i].csize;
-        *(DWORD *)(p + 24) = mine ? (DWORD)nl : e[i].usize;
-        *(WORD *)(p + 28) = L, *(WORD *)(p + 30) = 8;
-        *(DWORD *)(p + 42) = offs[2 * i];
-        memcpy(p + 46, e[i].name, L);
-        p += 46 + L;
-        *(WORD *)p = 0x1123, *(WORD *)(p + 2) = 4, *(DWORD *)(p + 4) = offs[2 * i + 1]; /* the game's: where the data is */
-        p += 8;
-    }
-    DWORD cdSize = (DWORD)(p - o) - cd;
-    *(DWORD *)p = 0x06054B50, *(WORD *)(p + 8) = (WORD)n, *(WORD *)(p + 10) = (WORD)n;
-    *(DWORD *)(p + 12) = cdSize, *(DWORD *)(p + 16) = cd;
-    p += 22;
-    dir[0] = cd, dir[1] = cdSize + 22, dir[2] = (DWORD)n;
     const WCHAR *base = wrel;
     for (const WCHAR *q = wrel; *q; q++)
         if (*q == '\\')
@@ -274,7 +299,9 @@ static int ov_zip(const char *rel, const char *entry, OvPatchFn patch, DWORD dir
     int ok = ov_save(out, o, (DWORD)(p - o));
     HeapFree(GetProcessHeap(), 0, o);
     HeapFree(GetProcessHeap(), 0, offs);
-    HeapFree(GetProcessHeap(), 0, t);
+    for (int j = 0; j < np; j++)
+        if (t[j])
+            HeapFree(GetProcessHeap(), 0, t[j]);
     HeapFree(GetProcessHeap(), 0, z);
     HeapFree(GetProcessHeap(), 0, e);
     if (!ok || g_ovN >= 4)
