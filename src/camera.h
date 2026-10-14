@@ -10,13 +10,16 @@
               (copies of the game's layers, scaled), a kick at gear changes, harder bumps, a shake and a wider view with
               speed; and its field of view (CameraSettings.ini, Driver\FOV);
      chase:   swinging out of turns and turning into them (the road round the corner in view), banking, swinging with
-              a slide, a soft lag, a shake at speed.
+              a slide, left behind under throttle and closing in under braking, lower, farther and wider at speed, a
+              shake at speed.
    The game's own units, measured: sideways g about 0..0.3 in turns, longitudinal 0..0.06 accelerating, to -0.75
    braking. Positive g sideways is a right turn, positive yaw a look to the right, positive x to the right, +z forward.
    The game reads the layers into vectors of 0x110-byte layers (Enabled at +0x40, Param x y z w at +0xE0) through one
    function for every camera's list (FH2 1.0.0.64: 0x103AA00, found by its "NumLayers"); it is hooked to keep where
    our cameras' lists are, so the switch (the game's HUD settings, vm.h; [Camera] Enabled) turns ours on and off at
-   once. */
+   once. A layer each frame (0x103E3E0): the input (+0x00; a "derivative" is its change per 1/60 s), clamped, through
+   the curve, times Param (degrees -> radians for the YPR outputs), into +0x10 (x y z w) directly, or on a spring
+   (velocity +0x20; K, damping SpringDPercent * 2 sqrt K, so 1 is critical) -- an impulse adds to the velocity. */
 #pragma once
 
 #define CAM_LAYER 0x110 /* a layer in the game's memory */
@@ -39,8 +42,10 @@ static struct {
     float fov;      /* the cockpit's field of view, degrees (the game's 48); 0: the game's */
     /* the chase cameras */
     int chase;
-    float swing;    /* 0..2: metres out of the turn (0.6 at 1) */
+    float swing;    /* 0..2: metres out of the turn (1, the high camera 1.3, at 1) */
     float chaseLook, chaseDead, bank, chaseDrift, lag, chaseShake;
+    float surge;    /* 0..2: left behind under throttle, closing in under braking */
+    float rush;     /* 0..2: lower, farther and wider at speed */
 } Cam;
 
 static float cam_pct(const WCHAR *sec, const WCHAR *key, int def, float max)
@@ -65,12 +70,14 @@ static void camera_load(void)
     Cam.fov = Cam.fov <= 0 ? 0 : Cam.fov < 30 ? 30 : Cam.fov > 90 ? 90 : Cam.fov;
     Cam.chase = fh2_ini_int(L"ChaseCamera", L"Enabled", 1) != 0;
     Cam.swing = cam_pct(L"ChaseCamera", L"Swing", 100, 2);
-    Cam.chaseLook = fh2_ini_float(L"ChaseCamera", L"LookIntoTurns", 6);
+    Cam.chaseLook = fh2_ini_float(L"ChaseCamera", L"LookIntoTurns", 10);
     Cam.chaseDead = cam_pct(L"ChaseCamera", L"TurnDeadzone", 10, 0.8f);
-    Cam.bank = fh2_ini_float(L"ChaseCamera", L"Bank", 1.5f);
-    Cam.chaseDrift = fh2_ini_float(L"ChaseCamera", L"SlideSwing", 10);
+    Cam.bank = fh2_ini_float(L"ChaseCamera", L"Bank", 3);
+    Cam.chaseDrift = fh2_ini_float(L"ChaseCamera", L"SlideSwing", 14);
     Cam.lag = cam_pct(L"ChaseCamera", L"Lag", 100, 2);
     Cam.chaseShake = cam_pct(L"ChaseCamera", L"Shake", 100, 2);
+    Cam.surge = cam_pct(L"ChaseCamera", L"Surge", 100, 2);
+    Cam.rush = cam_pct(L"ChaseCamera", L"SpeedRush", 100, 2);
 }
 
 /* ---- the file: a layer's tag <Layer a="v" ... /> ---- */
@@ -167,6 +174,32 @@ static int cam_pair(char **ours, const char *input, const char *output, float cl
     return 2;
 }
 
+/* a kick: (x, y, z) per second added to the spring's velocity when the input passes cut, at most once in delay s */
+static char *cam_impulse(const char *input, int deriv, const char *output, float clamp, const float curve[6], float x,
+                         float y, float z, float k, float d, float cut, float delay)
+{
+    char *l = cam_layer(input, deriv, "None", output, -clamp, clamp, 1, curve, x, y, z, k, d, 0);
+    char *at = strstr(l, " Sprung="), tail[160];
+    lstrcpynA(tail, at, sizeof tail);
+    _snprintf(at, 1199 - (size_t)(at - l), " ImpulseInputSizeCutoff=\"%.6f\" ImpulseDelay=\"%.6f\"%s", cut, delay, tail);
+    l[1199] = 0;
+    return l;
+}
+
+/* a probe for the log: the input as it is, a thousandth of it as millimetres (unseen) */
+static char *cam_probe(const char *input, int deriv)
+{
+    char *out = (char *)HeapAlloc(GetProcessHeap(), 0, 400);
+    _snprintf(out, 399,
+              "<Layer Enabled=\"%d\" LocationType=\"All\" InputType=\"%s\" NoiseType=\"None\" OutputType=\"CameraSpaceXYZOffset\" "
+              "InputTakeDerivative=\"%d\" InputClampMin=\"-50.000000\" InputClampMax=\"50.000000\" InputMagAttackDecay=\"0\" "
+              "InputToParamMapping=\"Linear\" Param.x=\"0.001000\" Param.y=\"0.000000\" Param.z=\"0.000000\" "
+              "Param.w=\"0.000000\" Sprung=\"0\"/>",
+              (int)Cam.on, input, deriv);
+    out[399] = 0;
+    return out;
+}
+
 /* a curve from the dead zone (a share of full) to full, eased in */
 static void cam_curve(float out[6], float full, float dead)
 {
@@ -212,9 +245,12 @@ static int cam_cockpit(char **ours, float bumps)
     /* a wider view with speed */
     static const float kFov[6] = {60, 0, 110, 0.6f, 160, 1};
     ours[k++] = cam_layer("SpeedMPH", 0, "None", "FOV", 0, 250, 0, kFov, Cam.speedFov, 0, 0, 20, 1.0f, 0);
-    /* a gear change: the head nods with the jolt (the longitudinal g changing fast), a bouncy spring */
-    static const float kKick[6] = {0.25f, 0, 0.8f, 0.6f, 2.5f, 1};
-    ours[k++] = cam_layer("Gs_Longitudinal", 1, "None", "CarSpaceYPROffset", -6, 6, 1, kKick, 0, 1.6f * Cam.kick, 0, 160, 0.45f, 0);
+    /* a gear change: the head nods with the jolt (the longitudinal g changing fast, per 1/60 s), a bouncy spring; down
+       (+pitch, as under braking) when the pull drops */
+    static const float kKick[6] = {0.01f, 0, 0.025f, 0.6f, 0.06f, 1};
+    ours[k++] = cam_impulse("Gs_Longitudinal", 1, "CarSpaceYPRImpulse", 1, kKick, 0, -28 * Cam.kick, 0, 120, 0.45f, 0.01f, 0.3f);
+    /* the longitudinal g's change, for the log */
+    ours[k++] = cam_probe("Gs_Longitudinal", 1);
     return k;
 }
 
@@ -222,21 +258,33 @@ static int cam_cockpit(char **ours, float bumps)
 static int cam_chase(char **ours, int high)
 {
     int k = 0;
-    float c[6], soft = 8.0f / (Cam.lag > 0.1f ? Cam.lag : 0.1f);
-    float reach = high ? 0.8f : 0.6f; /* the high camera is farther out */
-    cam_curve(c, 0.3f, Cam.chaseDead);
-    /* out of the turn and turned into it: the car slides to the inside of the picture, the corner comes into view */
-    k += cam_pair(ours + k, "Gs_Lateral", "CarSpaceXYZOffset", 1, c, -reach * Cam.swing, 0, 0, soft, 0.9f);
-    k += cam_pair(ours + k, "Gs_Lateral", "CameraSpaceYPROffset", 1, c, Cam.chaseLook, 0, 0, soft, 0.95f);
+    float c[6], lag = Cam.lag > 0.1f ? Cam.lag : 0.1f;
+    float reach = high ? 1.3f : 1.0f; /* the high camera is farther out */
+    cam_curve(c, 0.25f, Cam.chaseDead);
+    /* out of the turn and turned into it: the car slides to the inside of the picture, the corner comes into view; the
+       look a little ahead of the swing, both a little loose (overshooting a touch out of the turn) */
+    k += cam_pair(ours + k, "Gs_Lateral", "CarSpaceXYZOffset", 1, c, -reach * Cam.swing, 0, 0, 9 / lag, 0.7f);
+    k += cam_pair(ours + k, "Gs_Lateral", "CameraSpaceYPROffset", 1, c, Cam.chaseLook, 0, 0, 13 / lag, 0.75f);
     /* banking */
-    k += cam_pair(ours + k, "Gs_Lateral", "CarSpaceYPROffset", 1, c, 0, 0, -Cam.bank, soft * 1.5f, 0.9f);
+    k += cam_pair(ours + k, "Gs_Lateral", "CarSpaceYPROffset", 1, c, 0, 0, -Cam.bank, 12 / lag, 0.8f);
     /* a slide: the camera swings round with it, the car's flank in view */
     static const float kSlide[6] = {0.4f, 0, 1.2f, 0.55f, 3.0f, 1};
-    k += cam_pair(ours + k, "Slip_Lateral", "CameraSpaceYPROffset", 10, kSlide, Cam.chaseDrift, 0, 0, 10, 1.0f);
+    k += cam_pair(ours + k, "Slip_Lateral", "CameraSpaceYPROffset", 10, kSlide, Cam.chaseDrift, 0, 0, 10, 0.9f);
+    /* throttle: the car pulls away from the camera; braking: the camera closes in (the game's own a little, more) */
+    static const float kGo[6] = {0.004f, 0, 0.03f, 0.6f, 0.06f, 1};
+    static const float kStop[6] = {-0.6f, -1, -0.3f, -0.6f, -0.04f, 0};
+    ours[k++] = cam_layer("Gs_Longitudinal", 0, "None", "CarSpaceXYZOffset", 0, 1, 0, kGo, 0, 0, -0.6f * Cam.surge, 7 / lag, 0.9f, 0);
+    ours[k++] = cam_layer("Gs_Longitudinal", 0, "None", "CarSpaceXYZOffset", -1, 0, 0, kStop, 0, 0, -0.45f * Cam.surge, 8 / lag,
+                          0.9f, 0);
+    /* speed: wider (the game's own stops growing at 70 mph), lower and farther back */
+    static const float kRush[6] = {80, 0, 130, 0.55f, 180, 1};
+    ours[k++] = cam_layer("SpeedMPH", 0, "None", "FOV", 0, 250, 0, kRush, 7 * Cam.rush, 0, 0, 20, 1.0f, 0);
+    ours[k++] = cam_layer("SpeedMPH", 0, "None", "CarSpaceXYZOffset", 0, 250, 0, kRush, 0, -0.08f * Cam.rush, -0.3f * Cam.rush,
+                          20, 1.0f, 0);
     /* a shake at speed */
     static const float kShake[6] = {60, 0, 120, 0.5f, 200, 1};
-    ours[k++] = cam_layer("SpeedMPH", 0, "Simplex", "CameraSpaceYPROffset", 0, 250, 0, kShake, 0.10f * Cam.chaseShake,
-                          0.16f * Cam.chaseShake, 0.08f * Cam.chaseShake, 0, 0, 11);
+    ours[k++] = cam_layer("SpeedMPH", 0, "Simplex", "CameraSpaceYPROffset", 0, 250, 0, kShake, 0.14f * Cam.chaseShake,
+                          0.22f * Cam.chaseShake, 0.11f * Cam.chaseShake, 0, 0, 11);
     return k;
 }
 
@@ -351,11 +399,11 @@ static char *camera_patch(const char *xml, size_t len, size_t *outLen)
     }
     fh2_say("camera: cockpit -- looks %.0f degrees into turns (dead zone %d%%), lean %d%%, pitch +%d%%, bumps %d%%, "
             "shake %d%%, slide look %.0f, speed view +%.0f, gear kick %d%%; chase %s -- swing %d%%, look %.0f (dead zone "
-            "%d%%), bank %.1f, slide swing %.0f, lag %d%%, shake %d%%",
+            "%d%%), bank %.1f, slide swing %.0f, lag %d%%, shake %d%%, surge %d%%, speed rush %d%%",
             Cam.look, (int)(Cam.dead * 100), (int)(Cam.lean * 100), (int)(Cam.pitch * 100), (int)(Cam.bumps * 100),
             (int)(Cam.shake * 100), Cam.drift, Cam.speedFov, (int)(Cam.kick * 100), Cam.chase ? "on" : "off",
             (int)(Cam.swing * 100), Cam.chaseLook, (int)(Cam.chaseDead * 100), Cam.bank, Cam.chaseDrift,
-            (int)(Cam.lag * 100), (int)(Cam.chaseShake * 100));
+            (int)(Cam.lag * 100), (int)(Cam.chaseShake * 100), (int)(Cam.surge * 100), (int)(Cam.rush * 100));
     return cam_patch_any(xml, len, outLen, 1);
 }
 
@@ -430,46 +478,64 @@ static void cam_set(CamVec *v, int on)
     }
 }
 
-/* the first three minutes after a camera is read: every 10 s while driving, the most our layers' live state reached
-   (the game keeps it in the first 0x40 bytes: +0x10 the input, +0x18 the output, as far as seen) -- to tune by */
+/* while driving, for the first 24 times 10 s a camera moved (in a quarter of an hour at most): the most some of our
+   layers reached (their place in +0x10 x y z, times unit: radians -> degrees, metres, a probe's thousandths) -- to
+   tune by */
+static const struct {
+    const char *what;
+    signed char layer[2], comp;
+    float unit;
+} kCamWatch[2][4] = {
+    {{"look into turns", {0, 1}, 0, 57.29578f}, {"slide look", {17, 18}, 0, 57.29578f}, {"gear nod", {20, 20}, 1, 57.29578f},
+     {"g change", {21, 21}, 0, 1000}},
+    {{"swing m", {0, 1}, 0, 1}, {"look into turns", {2, 3}, 0, 57.29578f}, {"slide swing", {6, 7}, 0, 57.29578f},
+     {"surge m", {8, 9}, 2, 1}},
+};
+
 static DWORD WINAPI cam_watch(void *arg)
 {
     (void)arg;
-    for (int t = 0; t < 18; t++) {
-        float most[16][3][2];
+    for (int t = 0, said = 0; t < 90 && said < 24; t++) {
+        float most[16][4], first[16][4][2];
+        int moved[16];
         ZeroMemory(most, sizeof most);
+        ZeroMemory(moved, sizeof moved);
         for (int s = 0; s < 50; s++) {
             Sleep(200);
             AcquireSRWLockShared(&g_camLock);
             for (int v = 0; v < g_camVecs; v++) {
                 CamVec *c = &g_camVec[v];
+                int ch = c->kind != CAM_COCKPIT;
                 BYTE *b;
                 if (cam_layers(c->vec, &b) != c->base + c->count)
                     continue;
-                /* the cockpit: look (0, 1), slide (17, 18), kick (20); the chase: swing (0, 1), slide (6, 7) */
-                int pick[3][2] = {{0, 1}, {17, 18}, {20, 20}};
-                if (c->kind != CAM_COCKPIT)
-                    pick[1][0] = 6, pick[1][1] = 7, pick[2][0] = pick[2][1] = 4;
-                for (int g = 0; g < 3; g++)
+                for (int w = 0; w < 4; w++)
                     for (int side = 0; side < 2; side++) {
-                        if (pick[g][side] >= c->count)
+                        int i = kCamWatch[ch][w].layer[side];
+                        if (i >= c->count)
                             continue;
-                        const float *L = (const float *)(b + (c->base + pick[g][side]) * CAM_LAYER);
-                        for (int f = 0; f < 2; f++) {
-                            float x = L[4 + 2 * f] < 0 ? -L[4 + 2 * f] : L[4 + 2 * f];
-                            if (x > most[v][g][f] && x < 1e6f)
-                                most[v][g][f] = x;
-                        }
+                        const float *L = (const float *)(b + (c->base + i) * CAM_LAYER);
+                        float x = L[4 + kCamWatch[ch][w].comp];
+                        if (!s)
+                            first[v][w][side] = x;
+                        else if (x != first[v][w][side])
+                            moved[v] = 1;
+                        x = x < 0 ? -x : x;
+                        if (x > most[v][w] && x < 1e6f)
+                            most[v][w] = x;
                     }
             }
             ReleaseSRWLockShared(&g_camLock);
         }
         for (int v = 0; v < g_camVecs; v++)
-            if (most[v][0][0] + most[v][1][0] + most[v][2][0] > 0)
-                fh2_say("camera: %s (%d + %d), the most in 10 s: sideways g %.3f (out %.3f), slide %.3f (out %.3f), "
-                        "%s %.3f (out %.3f)", kCamName[g_camVec[v].kind], g_camVec[v].base, g_camVec[v].count,
-                        most[v][0][0], most[v][0][1], most[v][1][0], most[v][1][1],
-                        g_camVec[v].kind == CAM_COCKPIT ? "g change" : "bank", most[v][2][0], most[v][2][1]);
+            if (moved[v]) {
+                int ch = g_camVec[v].kind != CAM_COCKPIT;
+                fh2_say("camera: %s, the most in 10 s: %s %.3f, %s %.3f, %s %.3f, %s %.3f", kCamName[g_camVec[v].kind],
+                        kCamWatch[ch][0].what, most[v][0] * kCamWatch[ch][0].unit, kCamWatch[ch][1].what,
+                        most[v][1] * kCamWatch[ch][1].unit, kCamWatch[ch][2].what, most[v][2] * kCamWatch[ch][2].unit,
+                        kCamWatch[ch][3].what, most[v][3] * kCamWatch[ch][3].unit);
+                said++;
+            }
     }
     return 0;
 }

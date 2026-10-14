@@ -29,7 +29,8 @@ Speed. One DLL, switched on and off in the game's own settings.
 | **Banking** | A slight tilt with the turn. |
 | **Slides** | The camera swings round with a slide, the car's flank in view. |
 | **Lag** | It follows softly, never stiffly. |
-| **Speed** | A shake at high speed. |
+| **Throttle and braking** | The car pulls away from the camera under throttle; the camera closes in under braking. |
+| **Speed** | From 80 mph the view gets wider, the camera lower and farther back; a shake at high speed. |
 
 The hood and bumper cameras stay the game's own.
 
@@ -66,12 +67,14 @@ files at the start (the settings screens, the archive list) and each keeps the o
 | `[ChaseCamera]` | |
 |---|---|
 | `Enabled` | The chase cameras alive too (1) or the game's own (0). |
-| `Swing` | Out of the turn, percent (100 = about 0.6 m; the high camera 0.8 m). |
+| `Swing` | Out of the turn, percent (100 = 1 m; the high camera 1.3 m). |
 | `LookIntoTurns` | Degrees it turns into a hard turn (negative if it turns away). |
 | `TurnDeadzone` | Percent of a hard turn below which it stays behind the car. |
 | `Bank` | Degrees of tilt in turns (negative for the other way). |
 | `SlideSwing` | Degrees it swings round with a slide (negative for the other way). |
 | `Lag` | How softly it follows, percent. |
+| `Surge` | The car pulling away under throttle (0.6 m) and the camera closing in under braking (0.45 m), percent. |
+| `SpeedRush` | From 80 mph, full at 180: the view 7° wider, the camera lower and 0.3 m farther back, percent. |
 | `Shake` | The shake at speed, percent. |
 
 The amounts are read at the game's start; the on/off switch works at once.
