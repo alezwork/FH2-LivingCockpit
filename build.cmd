@@ -1,9 +1,12 @@
 @echo off
 rem Builds LivingCockpit.dll (the living cockpit for Forza Horizon 2 on Azimuth) into out\mods\ -- one file for
 rem Azimuth\mods\. It writes its LivingCockpit.ini with the defaults when there is none. Nothing else to install.
-rem build.cmd install   also copies it into ..\Azimuth\mods\ and ..\Azimuth FF\mods\.
+rem build.cmd install   also copies it into <FH2_GAME>\Azimuth\mods\ (made when missing).
+rem FH2_GAME: the folder with Azimuth\ (by default the one above this one), e.g. set FH2_GAME=D:\Forza Horizon 2 XboxOne
+rem It needs a mod loader in Azimuth\data\bin\ (azimuth-tls.dll from FH2-DualSense: see the README).
 rem Compiler: Visual Studio Build Tools (C++) when there, else zig (python -m pip install ziglang).
 cd /d "%~dp0"
+if not defined FH2_GAME set "FH2_GAME=%~dp0.."
 set B=%TEMP%\fh2livingcockpit_build
 set OUT=%~dp0out\mods
 if not exist "%B%" mkdir "%B%"
@@ -31,8 +34,9 @@ copy /y "%B%\LivingCockpit.dll" "%OUT%\" >nul || exit /b 1
 for %%F in ("%OUT%\LivingCockpit.dll") do echo built "%OUT%\LivingCockpit.dll" (%%~zF bytes)
 if /i not "%~1"=="install" exit /b 0
 
-for %%E in ("%~dp0..\Azimuth" "%~dp0..\Azimuth FF") do (
-  if exist "%%~E\mods" (
+for %%E in ("%FH2_GAME%\Azimuth" "%FH2_GAME%\Azimuth FF") do (
+  if exist "%%~E\azimuth.exe" (
+    if not exist "%%~E\mods" mkdir "%%~E\mods"
     copy /y "%OUT%\LivingCockpit.dll" "%%~E\mods\" >nul || exit /b 1
     echo installed into "%%~E\mods"
   )

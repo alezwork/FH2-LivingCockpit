@@ -149,16 +149,33 @@ static int vm_install(GameImage *g)
     return 1;
 }
 
-/* Scenes\Anthem\A_HUDOptions.xaml with the switches after the camera */
+/* ---- the switches' names in every language: our keys in each language's InGame table (strtab.h, labels.h) ---- */
+static int g_locLang, g_locSeen, g_locFail, g_locOk;
+
+/* media\stripped\stringtables\<g_locLang>.zip\InGame.str with our names and descriptions */
+static char *vm_strtab(const char *text, size_t len, size_t *outLen)
+{
+    int added;
+    char *out = loc_add(text, len, outLen, kLabelKey, kLabel[g_locLang], 4, &added);
+    g_locSeen++;
+    if (added < 0) {
+        g_locFail++;
+        fh2_say("settings: the %s string table is not as expected -- the switches' names in one language", kLocLang[g_locLang]);
+    }
+    return out;
+}
+
+/* Scenes\Anthem\A_HUDOptions.xaml with the switches after the camera: named from the string tables (with a
+   description, as the game's own rows) when every language has our keys, else in Russian or English */
 static char *vm_xaml(const char *text, size_t len, size_t *outLen)
 {
-    static const char kAnchor[] = "SelectedIndex=\"{Binding CameraAngle}\"";
-    const char *a = strstr(text, kAnchor);
+    static const char kAnchor[] = "SelectedIndex=\"{Binding CameraAngle}\"", kItem[] = "x:Key=\"A_DataItem_Camera\"";
+    const char *a = strstr(text, kAnchor), *item = g_locOk ? strstr(text, kItem) : NULL;
     if (!a) {
         fh2_say("settings: the HUD settings screen is not as expected -- no switches");
         return NULL;
     }
-    const char *start = a, *end = strstr(a, "/>");
+    const char *start = a, *end = strstr(a, "/>"), *itemEnd = item ? strstr(item, "/>") : NULL;
     while (start > text && *start != '<')
         start--;
     const char *ls = start;
@@ -167,28 +184,56 @@ static char *vm_xaml(const char *text, size_t len, size_t *outLen)
     if (!end || strncmp(start, "<local:SpinnerControl", 21))
         return NULL;
     end += 2;
-    static const char kRow[] = "\r\n%s<local:SpinnerControl Label=\"%s\" SelectedIndex=\"{Binding %s}\" "
-                               "ItemsSource=\"{Binding OnOffOptions}\" Style=\"{StaticResource A_Style_SpinnerControl_Default}\"/>";
-    char add[1400], indent[64];
-    int il = (int)(start - ls) < 63 ? (int)(start - ls) : 63;
+    if (!itemEnd || itemEnd > start)
+        item = itemEnd = NULL; /* the names below then */
+    else
+        itemEnd += 2;
+    char add[1400], res[900], indent[64], resIndent[64];
+    int il = (int)(start - ls) < 63 ? (int)(start - ls) : 63, n;
     memcpy(indent, ls, il);
     indent[il] = 0;
-    int n = wsprintfA(add, kRow, indent,
+    res[0] = 0;
+    if (item) {
+        static const char kRes[] = "\r\n%s<local:TileMenuDataItem x:Key=\"LC_DataItem_%s\" Heading=\"{local:Loc InGame.IDS_HudOption_%s}\" "
+                                   "Description=\"{local:Loc InGame.IDS_HudOption_%s_Desc}\" />";
+        static const char kRow[] = "\r\n%s<local:SpinnerControl Label=\"{local:Loc InGame.IDS_HudOption_%s}\" "
+                                   "Tag=\"{StaticResource LC_DataItem_%s}\" SelectedIndex=\"{Binding %s}\" "
+                                   "ItemsSource=\"{Binding OnOffOptions}\" Style=\"{StaticResource A_Style_SpinnerControl_Default}\"/>";
+        const char *rl = item;
+        while (rl > text && rl[-1] != '\n')
+            rl--;
+        int ri = 0;
+        while (rl + ri < item && (rl[ri] == ' ' || rl[ri] == '\t') && ri < 63)
+            ri++;
+        memcpy(resIndent, rl, ri);
+        resIndent[ri] = 0;
+        n = wsprintfA(res, kRes, resIndent, "LivingCamera", "LivingCamera", "LivingCamera");
+        wsprintfA(res + n, kRes, resIndent, "MotionBlur", "MotionBlur", "MotionBlur");
+        n = wsprintfA(add, kRow, indent, "LivingCamera", "LivingCamera", "LivingCamera");
+        wsprintfA(add + n, kRow, indent, "MotionBlur", "MotionBlur", "MotionBlur");
+    } else {
+        static const char kRow[] = "\r\n%s<local:SpinnerControl Label=\"%s\" SelectedIndex=\"{Binding %s}\" "
+                                   "ItemsSource=\"{Binding OnOffOptions}\" Style=\"{StaticResource A_Style_SpinnerControl_Default}\"/>";
+        n = wsprintfA(add, kRow, indent,
                       g_langRu ? "\xD0\x96\xD0\x98\xD0\x92\xD0\x90\xD0\xAF \xD0\x9A\xD0\x90\xD0\x9C\xD0\x95\xD0\xA0\xD0\x90" : "LIVING CAMERA",
                       "LivingCamera");
-    wsprintfA(add + n, kRow, indent,
-              g_langRu ? "\xD0\xA0\xD0\x90\xD0\x97\xD0\x9C\xD0\xAB\xD0\xA2\xD0\x98\xD0\x95 \xD0\x92 "
-                         "\xD0\x94\xD0\x92\xD0\x98\xD0\x96\xD0\x95\xD0\x9D\xD0\x98\xD0\x98"
-                       : "MOTION BLUR",
-              "MotionBlur");
-    size_t al = strlen(add), pre = (size_t)(end - text);
-    char *out = (char *)HeapAlloc(GetProcessHeap(), 0, len + al + 1);
+        wsprintfA(add + n, kRow, indent,
+                  g_langRu ? "\xD0\xA0\xD0\x90\xD0\x97\xD0\x9C\xD0\xAB\xD0\xA2\xD0\x98\xD0\x95 \xD0\x92 "
+                             "\xD0\x94\xD0\x92\xD0\x98\xD0\x96\xD0\x95\xD0\x9D\xD0\x98\xD0\x98"
+                           : "MOTION BLUR",
+                  "MotionBlur");
+    }
+    size_t al = strlen(add), rlen = strlen(res), r = item ? (size_t)(itemEnd - text) : 0, pre = (size_t)(end - text);
+    char *out = (char *)HeapAlloc(GetProcessHeap(), 0, len + al + rlen + 1), *o = out;
     if (!out)
         return NULL;
-    memcpy(out, text, pre);
-    memcpy(out + pre, add, al);
-    memcpy(out + pre + al, end, len - pre);
-    *outLen = len + al;
+    memcpy(o, text, r), o += r;
+    memcpy(o, res, rlen), o += rlen;
+    memcpy(o, text + r, pre - r), o += pre - r;
+    memcpy(o, add, al), o += al;
+    memcpy(o, end, len - pre), o += len - pre;
+    *outLen = (size_t)(o - out);
     out[*outLen] = 0;
+    fh2_say("settings: the switches in the HUD settings, named %s", item ? "in every language" : g_langRu ? "in Russian" : "in English");
     return out;
 }

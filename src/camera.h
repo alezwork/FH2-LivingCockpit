@@ -388,12 +388,19 @@ static char *camera_patch_sans(const char *xml, size_t len, size_t *outLen)
 }
 
 /* CameraSettings.ini: the cockpit's field of view (Driver\FOV, the game's 48) */
+static int g_extraOptions; /* ExtraOptions is there (its FOV sliders in the HUD settings: the cockpit's is its own) */
+
 static char *camera_settings(const char *text, size_t len, size_t *outLen)
 {
     static const char kKey[] = "Driver\\FOV ";
     const char *a = NULL;
     if (Cam.fov <= 0)
         return NULL;
+    if (g_extraOptions) {
+        fh2_say("camera: the cockpit's field of view is ExtraOptions' (its \"FOV - Driver\" in the HUD settings), not "
+                "[Camera] FieldOfView");
+        return NULL;
+    }
     for (const char *p = text; (p = strstr(p, kKey)) != NULL; p++)
         if (p == text || p[-1] == '\n') {
             a = p + sizeof kKey - 1;

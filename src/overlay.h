@@ -27,7 +27,7 @@ typedef struct {
     WCHAR suffix[96];      /* media\<the game's path> */
     WCHAR file[MAX_PATH];  /* ours */
 } OvFile;
-static OvFile g_ov[4];
+static OvFile g_ov[32]; /* the camera, the screens, the string tables of every language, the manifest */
 static int g_ovN;
 static WCHAR g_media[MAX_PATH], g_cache[MAX_PATH]; /* <game>\Mount\media\, mods\<the mod>.cache\ */
 static int g_langRu;
@@ -67,45 +67,12 @@ static int ov_save(const WCHAR *path, const void *data, DWORD len)
     return ok;
 }
 
-/* the engine's data\azimuth.ini (UTF-16): game_folder (relative to the engine), language */
+/* the game's media folder and the language, from the engine's data\azimuth.ini (fh2_game_folder) */
 static int ov_find_game(void)
 {
-    WCHAR ini[MAX_PATH], dir[MAX_PATH], folder[MAX_PATH] = L"", lang[32] = L"";
-    DWORD n = GetModuleFileNameW(NULL, dir, MAX_PATH), len = 0;
-    while (n && dir[n - 1] != '\\' && dir[n - 1] != '/')
-        n--;
-    dir[n] = 0;
-    lstrcpyW(ini, dir);
-    lstrcatW(ini, L"data\\azimuth.ini");
-    WCHAR *text = (WCHAR *)ov_load(ini, &len, 0);
-    if (!text)
-        return 0;
-    text[len / 2] = 0;
-    for (WCHAR *p = text; *p;) {
-        WCHAR *e = p;
-        while (*e && *e != '\n' && *e != '\r')
-            e++;
-        WCHAR save = *e;
-        *e = 0;
-        if (*p == 0xFEFF)
-            p++;
-        if (!folder[0] && CompareStringOrdinal(p, 12, L"game_folder=", 12, TRUE) == CSTR_EQUAL)
-            lstrcpynW(folder, p + 12, MAX_PATH);
-        if (!lang[0] && CompareStringOrdinal(p, 9, L"language=", 9, TRUE) == CSTR_EQUAL)
-            lstrcpynW(lang, p + 9, 32);
-        *e = save;
-        p = *e ? e + 1 : e;
-    }
-    HeapFree(GetProcessHeap(), 0, text);
-    if (!folder[0])
-        return 0;
-    if (folder[1] == ':' || (folder[0] == '\\' && folder[1] == '\\'))
-        lstrcpyW(ini, folder);
-    else {
-        lstrcpyW(ini, dir);
-        lstrcatW(ini, folder);
-    }
-    if (!GetFullPathNameW(ini, MAX_PATH, g_media, NULL))
+    WCHAR lang[32] = L"";
+    DWORD n;
+    if (!fh2_game_folder(g_media, lang, 32))
         return 0;
     n = lstrlenW(g_media);
     if (n && g_media[n - 1] != '\\')
@@ -309,7 +276,7 @@ static int ov_zip(const char *rel, const char *const *entries, const OvPatchFn *
             HeapFree(GetProcessHeap(), 0, t[j]);
     HeapFree(GetProcessHeap(), 0, z);
     HeapFree(GetProcessHeap(), 0, e);
-    if (!ok || g_ovN >= 4)
+    if (!ok || g_ovN >= 32)
         return 0;
     OvFile *f = &g_ov[g_ovN++];
     lstrcpyW(f->suffix, L"media\\");
@@ -364,7 +331,7 @@ static int ov_manifest(const char *const *rels, DWORD dirs[][3], const int *made
     lstrcatW(out, L"zipmanifest.xml");
     int ok = ov_save(out, text, (DWORD)tl);
     HeapFree(GetProcessHeap(), 0, text);
-    if (!ok || g_ovN >= 4)
+    if (!ok || g_ovN >= 32)
         return 0;
     OvFile *f = &g_ov[g_ovN++];
     lstrcpyW(f->suffix, L"media\\zipmanifest.xml");
